@@ -36,14 +36,39 @@ function sanitizeHeaderValue(value: string): string {
     return value.replace(/[\r\n\0]/g, '');
 }
 
+/**
+ * Convert a plain-text body into simple HTML that Gmail's compose editor keeps.
+ * Gmail's web editor loads a text/plain-only draft as HTML and collapses its
+ * newlines, so every line break disappears when the draft is opened to edit.
+ * Each line becomes a <div>, blank lines become <div><br></div> (Gmail's own markup).
+ */
+export function plainTextToHtml(text: string): string {
+    const escape = (line: string) => line
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const lines = text.replace(/\r\n?/g, '\n').split('\n');
+    const html = lines.map(line => line.length ? `<div>${escape(line)}</div>` : '<div><br></div>').join('');
+    return `<div dir="ltr">${html}</div>`;
+}
+
 export function createEmailMessage(validatedArgs: any): string {
     const encodedSubject = encodeEmailHeader(sanitizeHeaderValue(validatedArgs.subject));
     // Determine content type based on available content and explicit mimeType
     let mimeType = validatedArgs.mimeType || 'text/plain';
-    
+    let htmlBody: string | undefined = validatedArgs.htmlBody;
+
     // If htmlBody is provided and mimeType isn't explicitly set to text/plain,
     // use multipart/alternative to include both versions
-    if (validatedArgs.htmlBody && mimeType !== 'text/plain') {
+    if (htmlBody && mimeType !== 'text/plain') {
+        mimeType = 'multipart/alternative';
+    }
+
+    // Plain text only: add an HTML part built from the text so line breaks
+    // survive when the message is opened in Gmail's compose editor.
+    if (!htmlBody && mimeType === 'text/plain') {
+        htmlBody = plainTextToHtml(validatedArgs.body);
         mimeType = 'multipart/alternative';
     }
 
@@ -98,7 +123,7 @@ export function createEmailMessage(validatedArgs: any): string {
         emailParts.push('Content-Type: text/html; charset=UTF-8');
         emailParts.push('Content-Transfer-Encoding: 7bit');
         emailParts.push('');
-        emailParts.push(validatedArgs.htmlBody || validatedArgs.body); // Use body as fallback
+        emailParts.push(htmlBody || plainTextToHtml(validatedArgs.body));
         emailParts.push('');
         
         // Close the boundary
@@ -222,7 +247,7 @@ export async function createEmailWithNodemailer(validatedArgs: any): Promise<str
         bcc: validatedArgs.bcc?.join(', '),
         subject: validatedArgs.subject,
         text: validatedArgs.body,
-        html: validatedArgs.htmlBody,
+        html: validatedArgs.htmlBody || plainTextToHtml(validatedArgs.body),
         attachments: attachments,
         inReplyTo: validatedArgs.inReplyTo,
         references: validatedArgs.references || validatedArgs.inReplyTo
